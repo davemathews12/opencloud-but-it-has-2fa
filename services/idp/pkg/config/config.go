@@ -39,7 +39,7 @@ type MFA struct {
 }
 
 // MFAAvailable tells if two-factor authentication can be offered with this configuration. It
-// needs an identity manager with a wrappable identifier backend and a persistent
+// needs an identity manager whose identifier takes a second factor and a persistent
 // encryption secret to protect the secrets of the users.
 func (c *Config) MFAAvailable() bool {
 	if !c.MFA.Enabled || c.IDP.EncryptionSecretFile == "" {

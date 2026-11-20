@@ -109,7 +109,7 @@ type Service struct {
 	// now can be replaced in tests.
 	now func() time.Time
 
-	// passwordVerifier is set when the identifier backend is wrapped, see WrapBackend.
+	// passwordVerifier checks passwords again before a setup, see NewHandler.
 	passwordVerifier passwordVerifier
 }
 
@@ -476,7 +476,7 @@ func isOneTimeCode(code string) bool {
 
 // generateRecoveryCodes returns new recovery codes for the user and the hashes to store.
 func generateRecoveryCodes() (codes []string, hashes []string, err error) {
-	for i := 0; i < recoveryCodeCount; i++ {
+	for range recoveryCodeCount {
 		raw := make([]byte, recoveryCodeLength)
 		if _, err := rand.Read(raw); err != nil {
 			return nil, nil, err

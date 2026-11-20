@@ -12,6 +12,8 @@ import (
 const (
 	// minMasterSecretSize is the minimal size of the key the encryption key is derived from.
 	minMasterSecretSize = 16
+	// keySize is the size of the derived AES-256 key in bytes.
+	keySize = 32
 	// keyInfo binds the derived key to its purpose. Changing it invalidates all stored secrets.
 	keyInfo = "opencloud idp mfa secret encryption v1"
 )
@@ -27,7 +29,7 @@ func newSealer(masterSecret []byte) (*sealer, error) {
 		return nil, errors.New("mfa: encryption secret is too short")
 	}
 
-	key, err := hkdf.Key(sha256.New, masterSecret, nil, keyInfo, 32)
+	key, err := hkdf.Key(sha256.New, masterSecret, nil, keyInfo, keySize)
 	if err != nil {
 		return nil, err
 	}

@@ -22,11 +22,19 @@ import { handleAxiosError } from './utils';
 export const ModeLogonUsernameEmptyPasswordCookie = '0';
 export const ModeLogonUsernamePassword = '1';
 
-// Values of the response header 'opencloud-mfa' of a rejected logon. It tells if and
+// Results in the 'second_factor' of a logon reply whose password was correct. They tell
 // why the second factor (two-factor authentication) of the user rejected it: 'required'
 // when no code was sent, or one of these.
 const MFAResultInvalid = 'invalid';
 const MFAResultLocked = 'locked';
+
+// encodeCode returns the code as the second factor of the logon request: its digits,
+// without the spaces some authenticator apps show, as bytes in base64. Recovery codes are
+// entered as a code as well.
+function encodeCode(code) {
+  const bytes = new TextEncoder().encode(code.replace(/\s+/g, ''));
+  return { type: 'totp', value: btoa(String.fromCharCode(...bytes)) };
+}
 
 // mfaAttempt is the result of a logon whose password was correct, but whose second
 // factor is still missing or was not accepted.
@@ -115,10 +123,6 @@ export function executeLogon(username, password, mode=ModeLogonUsernamePassword,
       case ModeLogonUsernamePassword:
         // Username with password.
         params.push(username, password, mode);
-        if (code) {
-          // One-time code or recovery code of the two-factor authentication.
-          params.push(code);
-        }
         break;
 
       case ModeLogonUsernameEmptyPasswordCookie:
@@ -133,6 +137,9 @@ export function executeLogon(username, password, mode=ModeLogonUsernamePassword,
       params: params,
       hello: newHelloRequest(flow, query)
     });
+    if (code) {
+      r.second_factor = encodeCode(code);
+    }
     return axios.post('./identifier/_/logon', r, {
       headers: {
         'Kopano-Konnect-XSRF': '1'
@@ -140,23 +147,21 @@ export function executeLogon(username, password, mode=ModeLogonUsernamePassword,
     }).then(response => {
       switch (response.status) {
         case 200:
+          if (response.data.second_factor) {
+            // the password was correct, the second factor is missing or was not accepted.
+            return mfaAttempt(response.data.state, response.data.second_factor.result);
+          }
           // success.
           return response.data;
-        case 204: {
-          // login failed. The header tells when it was the second factor.
-          const state = response.headers['kopano-konnect-state'];
-          const mfaResult = response.headers['opencloud-mfa'];
-          if (mfaResult) {
-            return mfaAttempt(state, mfaResult);
-          }
+        case 204:
+          // login failed.
           return {
             success: false,
-            state,
+            state: response.headers['kopano-konnect-state'],
             errors: {
               http: new Error(ERROR_LOGIN_FAILED)
             }
           };
-        }
         default:
           // error.
           throw new ExtendedError(ERROR_HTTP_UNEXPECTED_RESPONSE_STATUS, response);

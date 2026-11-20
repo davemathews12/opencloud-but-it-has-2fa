@@ -15,101 +15,6 @@ import (
 	"github.com/opencloud-eu/opencloud/pkg/log"
 )
 
-const testLogonPath = "/signin/v1/identifier/_/logon"
-
-// fakeIdentifier behaves like the logon handler of the identifier: it asks the backend
-// and answers with 200 or 204.
-func fakeIdentifier(t *testing.T, svc *Service) http.Handler {
-	wrapped := svc.WrapBackend(&fakeBackend{})
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var logon struct {
-			Params []string `json:"params"`
-		}
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&logon), "the body must still be readable")
-		ok, _, _, _, err := wrapped.Logon(r.Context(), "", logon.Params[0], logon.Params[1])
-		switch {
-		case err != nil:
-			w.WriteHeader(http.StatusInternalServerError)
-		case ok:
-			_, _ = w.Write([]byte(`{"success":true}`))
-		default:
-			w.WriteHeader(http.StatusNoContent)
-		}
-	})
-}
-
-func TestLogonMiddleware(t *testing.T) {
-	svc, c, _ := newTestService(t)
-	secret, _ := enroll(t, svc, c, alan)
-	h := &Handler{svc: svc, logger: log.NopLogger()}
-	server := h.LogonMiddleware(testLogonPath)(fakeIdentifier(t, svc))
-
-	logon := func(params ...string) *http.Response {
-		body, err := json.Marshal(map[string]any{"params": params, "state": "abc"})
-		require.NoError(t, err)
-		rec := httptest.NewRecorder()
-		server.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, testLogonPath, strings.NewReader(string(body))))
-		return rec.Result()
-	}
-
-	t.Run("user without second factor", func(t *testing.T) {
-		res := logon("mary", "secret", "1")
-		assert.Equal(t, http.StatusOK, res.StatusCode)
-		assert.Empty(t, res.Header.Get(ResultHeader))
-	})
-
-	t.Run("wrong password", func(t *testing.T) {
-		res := logon("alan", "wrong", "1", codeFor(t, secret, c.now()))
-		assert.Equal(t, http.StatusNoContent, res.StatusCode)
-		assert.Empty(t, res.Header.Get(ResultHeader), "must not reveal that the user has a second factor")
-	})
-
-	t.Run("code required", func(t *testing.T) {
-		res := logon("alan", "secret", "1")
-		assert.Equal(t, http.StatusNoContent, res.StatusCode)
-		assert.Equal(t, "required", res.Header.Get(ResultHeader))
-	})
-
-	t.Run("wrong code", func(t *testing.T) {
-		res := logon("alan", "secret", "1", "000000")
-		assert.Equal(t, http.StatusNoContent, res.StatusCode)
-		assert.Equal(t, "invalid", res.Header.Get(ResultHeader))
-	})
-
-	t.Run("correct code", func(t *testing.T) {
-		res := logon("alan", "secret", "1", codeFor(t, secret, c.now()))
-		assert.Equal(t, http.StatusOK, res.StatusCode)
-		assert.Empty(t, res.Header.Get(ResultHeader))
-	})
-
-	t.Run("locked", func(t *testing.T) {
-		for i := 0; i < maxFailedAttempts; i++ {
-			logon("alan", "secret", "1", "000000")
-		}
-		c.advance(totpPeriod * time.Second)
-		res := logon("alan", "secret", "1", codeFor(t, secret, c.now()))
-		assert.Equal(t, http.StatusNoContent, res.StatusCode)
-		assert.Equal(t, "locked", res.Header.Get(ResultHeader))
-	})
-
-	t.Run("other requests are passed through untouched", func(t *testing.T) {
-		called := false
-		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			called = true
-			assert.Nil(t, loginStateFromContext(r.Context()))
-		})
-		h.LogonMiddleware(testLogonPath)(next).ServeHTTP(httptest.NewRecorder(),
-			httptest.NewRequest(http.MethodPost, "/signin/v1/identifier/_/hello", strings.NewReader(`{}`)))
-		assert.True(t, called)
-	})
-
-	t.Run("too large requests are rejected", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		server.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, testLogonPath, strings.NewReader(strings.Repeat("x", maxBodySize+1))))
-		assert.Equal(t, http.StatusBadRequest, rec.Code)
-	})
-}
-
 // api is a client for the routes of a Handler with alan logged in.
 type api struct {
 	t        *testing.T
@@ -148,7 +53,7 @@ func (a *api) do(method, path, body string, out any) int {
 
 func TestAPI(t *testing.T) {
 	svc, c, _ := newTestService(t)
-	svc.WrapBackend(&fakeBackend{})
+	svc.passwordVerifier = newPasswordVerifier(&fakeBackend{})
 	a := newAPI(t, svc)
 
 	var status statusResponse
@@ -238,7 +143,7 @@ func TestAPI(t *testing.T) {
 
 func TestAPIRequiresLogin(t *testing.T) {
 	svc, _, _ := newTestService(t)
-	svc.WrapBackend(&fakeBackend{})
+	svc.passwordVerifier = newPasswordVerifier(&fakeBackend{})
 	a := newAPI(t, svc)
 	a.loggedIn = nil
 
@@ -255,7 +160,7 @@ func TestAPIRequiresLogin(t *testing.T) {
 
 func TestAPIRejectsCrossSiteRequests(t *testing.T) {
 	svc, _, _ := newTestService(t)
-	svc.WrapBackend(&fakeBackend{})
+	svc.passwordVerifier = newPasswordVerifier(&fakeBackend{})
 
 	for name, headers := range map[string]map[string]string{
 		"no xsrf header":       {"Origin": "https://cloud.example.org"},

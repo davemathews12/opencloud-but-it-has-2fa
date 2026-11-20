@@ -69,6 +69,7 @@ func readRecordByKey(st microstore.Store, key string) (*record, error) {
 }
 
 func writeRecord(st microstore.Store, r *record) error {
+	// #nosec G117 -- the secret in the record is encrypted, see sealer
 	value, err := json.Marshal(r)
 	if err != nil {
 		return err

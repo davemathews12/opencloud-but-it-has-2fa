@@ -26,6 +26,16 @@ const (
 	totpSkew = 1
 	// totpSecretSize is the size of a generated secret in bytes (160 bit, see RFC 4226 section 4).
 	totpSecretSize = 20
+	// totpModulo cuts the truncated value down to totpDigits digits.
+	totpModulo = 1000000
+
+	// hotpCounterSize is the size of the HOTP counter in bytes (RFC 4226 section 5.1).
+	hotpCounterSize = 8
+	// hotpOffsetMask selects the low 4 bits of the last byte as the offset of the
+	// dynamic truncation (RFC 4226 section 5.3).
+	hotpOffsetMask = 0x0f
+	// hotpValueMask drops the sign bit of the truncated value (RFC 4226 section 5.3).
+	hotpValueMask = 0x7fffffff
 )
 
 var secretEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
@@ -46,17 +56,17 @@ func encodeSecret(secret []byte) string {
 
 // hotp implements the HOTP algorithm from RFC 4226.
 func hotp(secret []byte, counter uint64) string {
-	msg := make([]byte, 8)
+	msg := make([]byte, hotpCounterSize)
 	binary.BigEndian.PutUint64(msg, counter)
 
 	mac := hmac.New(sha1.New, secret)
 	mac.Write(msg)
 	sum := mac.Sum(nil)
 
-	offset := sum[len(sum)-1] & 0x0f
-	value := binary.BigEndian.Uint32(sum[offset:offset+4]) & 0x7fffffff
+	offset := sum[len(sum)-1] & hotpOffsetMask
+	value := binary.BigEndian.Uint32(sum[offset:offset+4]) & hotpValueMask
 
-	return fmt.Sprintf("%0*d", totpDigits, value%1000000)
+	return fmt.Sprintf("%0*d", totpDigits, value%totpModulo)
 }
 
 // totpStep returns the TOTP time step (RFC 6238) for the given time.

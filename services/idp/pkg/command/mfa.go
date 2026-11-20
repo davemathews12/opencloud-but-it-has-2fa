@@ -50,7 +50,8 @@ func mfaList(cfg *config.Config) *cobra.Command {
 				return err
 			}
 
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			const padding = 2
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, padding, ' ', 0)
 			fmt.Fprintln(w, "USERNAME\tUSER ID\tENABLED SINCE")
 			for _, e := range enrollments {
 				fmt.Fprintf(w, "%s\t%s\t%s\n", e.User.Username, e.User.ID, e.EnabledAt.Format(time.RFC3339))

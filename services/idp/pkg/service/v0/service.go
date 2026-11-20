@@ -18,14 +18,12 @@ import (
 	libreGraphBackendSupport "github.com/libregraph/lico/bootstrap/backends/libregraph"
 	licoconfig "github.com/libregraph/lico/config"
 	"github.com/libregraph/lico/identifier"
-	"github.com/libregraph/lico/identifier/backends"
 	"github.com/libregraph/lico/server"
 	"github.com/opencloud-eu/opencloud/pkg/ldap"
 	"github.com/opencloud-eu/opencloud/pkg/log"
 	"github.com/opencloud-eu/opencloud/pkg/tracing"
 	"github.com/opencloud-eu/opencloud/services/idp/pkg/assets"
 	cs3BackendSupport "github.com/opencloud-eu/opencloud/services/idp/pkg/backends/cs3/bootstrap"
-	wrappedLdapBackendSupport "github.com/opencloud-eu/opencloud/services/idp/pkg/backends/ldap/bootstrap"
 	"github.com/opencloud-eu/opencloud/services/idp/pkg/config"
 	"github.com/opencloud-eu/opencloud/services/idp/pkg/mfa"
 	"github.com/opencloud-eu/opencloud/services/idp/pkg/middleware"
@@ -58,10 +56,9 @@ func NewService(opts ...Option) Service {
 		logger.Fatal().Err(err).Msg("could not create default config")
 	}
 
-	// With two-factor authentication the identifier backend is wrapped to require a
-	// one-time code after the password was verified.
+	// With two-factor authentication the identifier asks for a one-time code after
+	// the password was verified.
 	var mfaService *mfa.Service
-	var wrapBackend func(backends.Backend) backends.Backend
 	if options.Config.MFA.Enabled && !options.Config.MFAAvailable() {
 		logger.Info().Str("identity_manager", options.Config.IDP.IdentityManager).
 			Msg("two-factor authentication is not offered, it needs the identity manager 'ldap' or 'cs3' and an encryption secret file")
@@ -72,12 +69,11 @@ func NewService(opts ...Option) Service {
 		if err != nil {
 			logger.Fatal().Err(err).Msg("could not initialize two-factor authentication")
 		}
-		wrapBackend = mfaService.WrapBackend
 	}
 
 	switch options.Config.IDP.IdentityManager {
 	case "cs3":
-		cs3BackendSupport.MustRegister(wrapBackend)
+		cs3BackendSupport.MustRegister()
 		if err := initCS3EnvVars(options.Config.Reva.Address, options.Config.MachineAuthAPIKey); err != nil {
 			logger.Fatal().Err(err).Msg("could not initialize cs3 backend env vars")
 		}
@@ -91,11 +87,7 @@ func NewService(opts ...Option) Service {
 			options.Config.Ldap.TLSCACert = ""
 		}
 
-		if wrapBackend != nil {
-			wrappedLdapBackendSupport.MustRegister(wrapBackend)
-		} else {
-			ldapBackendSupport.MustRegister()
-		}
+		ldapBackendSupport.MustRegister()
 		if err := initLicoInternalLDAPEnvVars(&options.Config.Ldap); err != nil {
 			logger.Fatal().Err(err).Msg("could not initialize ldap env vars")
 		}
@@ -139,6 +131,9 @@ func NewService(opts ...Option) Service {
 		IDTokenDurationSeconds:            options.Config.IDP.IDTokenDurationSeconds,
 		RefreshTokenDurationSeconds:       options.Config.IDP.RefreshTokenDurationSeconds,
 		DyamicClientSecretDurationSeconds: options.Config.IDP.DynamicClientSecretDurationSeconds,
+	}
+	if mfaService != nil {
+		idpSettings.IdentifierSecondFactor = mfaService
 	}
 	bs, err := bootstrap.Boot(ctx, &idpSettings, &licoconfig.Config{
 		Logger: log.LogrusWrap(logger),
@@ -326,11 +321,6 @@ func (idp *IDP) initMux(ctx context.Context, r []server.WithRoutes, h http.Handl
 			otelchi.WithPropagators(tracing.GetPropagator()),
 		),
 	)
-
-	if idp.mfa != nil {
-		// hands the one-time code of logon requests to the identifier backend
-		idp.mux.Use(idp.mfa.LogonMiddleware("/signin/v1/identifier/_/logon"))
-	}
 
 	// handle / | index.html with a template that needs to have the BASE_PREFIX replaced
 	idp.mux.Get("/signin/v1/identifier", idp.Index())

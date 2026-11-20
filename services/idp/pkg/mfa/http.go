@@ -1,10 +1,8 @@
 package mfa
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,16 +15,8 @@ import (
 )
 
 const (
-	// ResultHeader is the response header of the logon endpoint that tells the login page
-	// why a logon with a correct password was rejected. Its value is a LoginResult.
-	ResultHeader = "OpenCloud-MFA"
-
 	// xsrfHeader has to be sent by the login page, like for the other identifier endpoints.
 	xsrfHeader = "Kopano-Konnect-XSRF"
-
-	// logonCodeParam is the index of the one-time code in the params of a logon request:
-	// [username, password, mode, code]
-	logonCodeParam = 3
 
 	maxBodySize = 1 << 16
 )
@@ -41,6 +31,8 @@ type Handler struct {
 
 // NewHandler creates a new Handler. The identifier is used to find out who is logged in.
 func NewHandler(svc *Service, identifier *identifier.Identifier, logger log.Logger) *Handler {
+	svc.passwordVerifier = newPasswordVerifier(identifier.Config.Backend)
+
 	return &Handler{
 		svc:    svc,
 		logger: logger,
@@ -55,70 +47,6 @@ func NewHandler(svc *Service, identifier *identifier.Identifier, logger log.Logg
 			return &User{ID: identified.Subject(), Username: identified.Username()}
 		},
 	}
-}
-
-// LogonMiddleware passes the one-time code of logon requests on logonPath to the wrapped
-// identifier backend (see Service.WrapBackend) and reports the result of the second
-// factor check in the ResultHeader of the response.
-func (h *Handler) LogonMiddleware(logonPath string) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost || r.URL.Path != logonPath {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodySize))
-			if err != nil {
-				http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
-				return
-			}
-			r.Body = io.NopCloser(bytes.NewReader(body))
-
-			state := &loginState{}
-			var logon struct {
-				Params []string `json:"params"`
-			}
-			// invalid requests are rejected by the identifier
-			if err := json.Unmarshal(body, &logon); err == nil && len(logon.Params) > logonCodeParam {
-				state.code = logon.Params[logonCodeParam]
-			}
-
-			next.ServeHTTP(
-				&logonResponseWriter{ResponseWriter: w, state: state},
-				r.WithContext(withLoginState(r.Context(), state)),
-			)
-		})
-	}
-}
-
-// logonResponseWriter adds the ResultHeader to the response of a rejected logon.
-type logonResponseWriter struct {
-	http.ResponseWriter
-	state       *loginState
-	wroteHeader bool
-}
-
-func (w *logonResponseWriter) WriteHeader(statusCode int) {
-	if !w.wroteHeader {
-		w.wroteHeader = true
-		if !w.state.result.Passed() {
-			w.Header().Set(ResultHeader, string(w.state.result))
-		}
-	}
-	w.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (w *logonResponseWriter) Write(b []byte) (int, error) {
-	if !w.wroteHeader {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-// Unwrap supports http.ResponseController.
-func (w *logonResponseWriter) Unwrap() http.ResponseWriter {
-	return w.ResponseWriter
 }
 
 // Routes returns the API users manage their second factor with. All endpoints require a
